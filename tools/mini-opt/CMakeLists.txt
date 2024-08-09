@@ -4,7 +4,7 @@ get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 # Set MLIR dialect libs.
 set(LIBS
         ${dialect_libs}
-        MLIRMatOps
+        MLIRMat
         MLIRAnalysis
         MLIRCallInterfaces
         MLIRCastInterfaces

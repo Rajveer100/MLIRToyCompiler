@@ -1,1 +1,1 @@
-add_subdirectory(MatOps)
+add_subdirectory(Mat)
