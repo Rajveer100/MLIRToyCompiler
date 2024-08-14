@@ -1,4 +1,4 @@
-//===- MatDialect.cpp - Matrix Dialect support code -----------===//
+//===- MatDialect.cpp - Matrix dialect support code -----------===//
 //
 // Created by Rajveer Singh on 07/08/24.
 //

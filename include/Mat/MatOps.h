@@ -1,6 +1,6 @@
 //===- MatOps.h - Matrix operation class ----------------------===//
 //
-// Created by Rajveer Singh on 07/08/24.
+// Author: Rajveer <rajveer.developer@icloud.com>
 //
 //===----------------------------------------------------------===//
 //
@@ -17,6 +17,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/TilingInterface.h"
 
 #define GET_OP_CLASSES
 #include "Mat/MatOps.h.inc"

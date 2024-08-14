@@ -1,6 +1,6 @@
 //===- MatDialect.td - Matrix dialect definition -----*- tablegen -*-===//
 //
-// Created by Rajveer Singh on 07/08/24.
+// Author: Rajveer <rajveer.developer@icloud.com>
 //
 //===----------------------------------------------------------------===//
 //

@@ -1,6 +1,6 @@
 //===- MatDialect.h - Matrix dialect class --------------------===//
 //
-// Created by Rajveer Singh on 07/08/24.
+// Author: Rajveer <rajveer.developer@icloud.com>
 //
 //===----------------------------------------------------------===//
 //

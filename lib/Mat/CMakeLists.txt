@@ -2,6 +2,7 @@
 add_mlir_dialect_library(MLIRMat
         MatDialect.cpp
         MatOps.cpp
+        TilingPass.cpp
 
         ADDITIONAL_HEADER_DIRS
         ${PROJECT_SOURCE_DIR}/include/Mat

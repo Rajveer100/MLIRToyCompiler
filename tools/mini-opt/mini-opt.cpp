@@ -1,6 +1,8 @@
 //===- mini-opt.cpp - Mini Optimizer Driver -------------------===//
 //
-// Created by Rajveer Singh on 07/08/24.
+// Author: Rajveer <rajveer.developer@icloud.com>
+//
+// Implements the `mini-opt` tool optimizer driver.
 //
 //===----------------------------------------------------------===//
 
@@ -24,6 +26,7 @@
 
 #include "Mat/MatDialect.h"
 #include "Mat/MatOps.h"
+#include "Mat/Passes.h"
 
 namespace cl = llvm::cl;
 static cl::opt<std::string> inputFilename(cl::Positional,
@@ -31,12 +34,20 @@ static cl::opt<std::string> inputFilename(cl::Positional,
                                           cl::init("-"),
                                           cl::value_desc("filename"));
 
+static cl::opt<bool> enableTilePass("tile-pass",
+                                           cl::desc("Enable the Tiling Pass"),
+                                           cl::init(false));
+
+/// Dumps MLIR.
 int dumpMLIR();
 
+// Entry point for the optimizer driver.
 int main(int argc, char **argv) {
-  // Register any command line options.
+  // Register command line options and pass manager CL options.
   mlir::registerAsmPrinterCLOptions();
   mlir::registerMLIRContextCLOptions();
+  mlir::registerPassManagerCLOptions();
+
   cl::ParseCommandLineOptions(argc, argv, "Mini Toy Compiler\n");
 
   if (int error = dumpMLIR())
@@ -47,9 +58,11 @@ int main(int argc, char **argv) {
 
 int dumpMLIR() {
   mlir::MLIRContext context;
-  // Load dialect in this MLIR context.
+  // Load built-in dialects in this MLIR context.
   context.getOrLoadDialect<mlir::func::FuncDialect>();
   context.getOrLoadDialect<mlir::arith::ArithDialect>();
+  context.getOrLoadDialect<mlir::tensor::TensorDialect>();
+  // Load MatDialect.
   context.getOrLoadDialect<mlir::mat::MatDialect>();
 
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> fileOrErr =
@@ -67,6 +80,21 @@ int dumpMLIR() {
     llvm::errs() << "Error can't load file: " << inputFilename << "\n";
     return 3;
   }
+
+  mlir::PassManager pm(module.get()->getName());
+  if (mlir::failed(mlir::applyPassManagerCLOptions(pm)))
+    return 4;
+
+  pm.addPass(mlir::createInlinerPass());
+
+  // Create tiling pass if enabled.
+  if (enableTilePass) {
+    mlir::OpPassManager &optPm = pm.nest<mlir::func::FuncOp>();
+    optPm.addPass(mlir::mat::createTilingPass());
+  }
+
+  if (mlir::failed(pm.run(*module)))
+    return 4;
 
   module->dump();
   return 0;
