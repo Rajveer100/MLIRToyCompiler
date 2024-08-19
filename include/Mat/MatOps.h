@@ -12,6 +12,7 @@
 #define MINITOYCOMPILER_MATOPS_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
@@ -22,4 +23,4 @@
 #define GET_OP_CLASSES
 #include "Mat/MatOps.h.inc"
 
-#endif //MINITOYCOMPILER_MATOPS_H
+#endif // MINITOYCOMPILER_MATOPS_H

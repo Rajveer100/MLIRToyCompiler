@@ -20,6 +20,8 @@ set(LIBS
         MLIRSupport
         MLIRTargetLLVMIRExport
         MLIRTransforms
+        MLIRBufferizationDialect
+        MLIRBufferizationTransforms
         MLIROptLib
 )
 

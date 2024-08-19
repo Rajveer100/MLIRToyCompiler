@@ -6,6 +6,7 @@
 
 #include "Mat/MatDialect.h"
 #include "Mat/MatOps.h"
+#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 
 using namespace mlir;
 using namespace mlir::mat;
@@ -18,5 +19,5 @@ void MatDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
 #include "Mat/MatOps.cpp.inc"
-  >();
+      >();
 }

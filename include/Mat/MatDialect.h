@@ -19,4 +19,4 @@
 
 #include "Mat/MatOpsDialect.h.inc"
 
-#endif //MINITOYCOMPILER_MATDIALECT_H
+#endif // MINITOYCOMPILER_MATDIALECT_H
