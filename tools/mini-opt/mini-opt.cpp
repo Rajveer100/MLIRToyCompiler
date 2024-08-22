@@ -99,6 +99,8 @@ int loadMLIR() {
   context.getOrLoadDialect<mlir::mat::MatDialect>();
 
   mlir::bufferization::registerOneShotBufferize();
+  mlir::tensor::registerTensorBufferizePass();
+  mlir::arith::registerArithBufferizePass();
 
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> fileOrErr =
       llvm::MemoryBuffer::getFileOrSTDIN(inputFilename);
@@ -125,14 +127,15 @@ int loadMLIR() {
 
   // Create tiling pass if enabled.
   if (enableTilePass) {
-    mlir::OpPassManager &optPm = pm.nest<mlir::func::FuncOp>();
-    optPm.addPass(mlir::mat::createTilingPass());
+    pm.addNestedPass<mlir::func::FuncOp>(mlir::mat::createTilingPass());
   }
 
   /// Create bufferization pass if enabled.
   if (enableOneShotBufferize) {
     llvm::errs() << "Enabling one shot bufferization...\n";
     pm.addPass(mlir::bufferization::createOneShotBufferizePass());
+    pm.addPass(mlir::arith::createArithBufferizePass());
+    pm.addNestedPass<mlir::func::FuncOp>(mlir::tensor::createTensorBufferizePass());
   }
 
   if (enableLLVMIRDump) {
