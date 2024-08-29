@@ -62,6 +62,20 @@ def Mat_AddOp : Mat_Op<"add",
   let description = [{
     This operation performs element-wise addition of two int8_t matrices
     and stores the result in a third matrix.
+
+    Both matrices must have the same dimensions, i.e, for a valid operation:
+
+    dim(A) = dim(B) = (n x m)
+
+    Example:
+
+      ```
+      %0 = mat.constant dense<1> : tensor<2x4xi8>
+      %1 = mat.constant dense<1> : tensor<2x4xi8>
+
+      %2 = mat.add %0, %1
+            : (tensor<2x4xi8>, tensor<2x4xi8>) -> tensor<2x4xi8>
+      ```
   }];
 
   let arguments = (ins
@@ -78,6 +92,8 @@ def Mat_AddOp : Mat_Op<"add",
   let builders = [
     OpBuilder<(ins "mlir::Value":$lhs, "mlir::Value":$rhs)>
   ];
+
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------===//
@@ -91,8 +107,26 @@ def Mat_MulOp : Mat_Op<"mul",
                                                         "bufferize"]>]> {
   let summary = "Element-wise multiplication of two int8_t matrices";
   let description = [{
-    This operation performs element-wise multiplication of two int8_t matrices
+    This operation performs multiplication (dot-product) of two int8_t matrices
     and stores the result in a third matrix.
+
+    The number of columns of first matrix must be equal to the number of rows
+    of the second matrix, i.e, for a valid operation:
+
+    dim(A) = (n1 x m1)
+    dim(B) = (n2 x m2)
+
+    => m1 = n2
+
+    Example:
+
+      ```
+      %0 = mat.constant dense<1> : tensor<2x4xi8>
+      %1 = mat.constant dense<1> : tensor<4x2xi8>
+
+      %2 = mat.mul %0, %1
+            : (tensor<2x4xi8>, tensor<4x2xi8>) -> tensor<2x2xi8>
+      ```
   }];
 
   let arguments = (ins
@@ -109,6 +143,8 @@ def Mat_MulOp : Mat_Op<"mul",
   let builders = [
     OpBuilder<(ins "mlir::Value":$lhs, "mlir::Value":$rhs)>
   ];
+
+  let hasVerifier = 1;
 }
 
 #endif // MAT_OPS

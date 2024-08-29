@@ -37,14 +37,18 @@ struct TilingPass
   inline static constexpr int64_t START_OFFSET = 0;
   inline static constexpr int64_t TILE_SIZE = 8;
 
-  void runOnOperation() override {
-    func::FuncOp func = getOperation();
+  void runOnOperation() final;
+};
+} // namespace
 
-    // Traverse within the function for each operation.
-    func.walk([&](AddOp op) {
-      OpBuilder builder(op);
+void TilingPass::runOnOperation() {
+  func::FuncOp func = getOperation();
 
-      // Set initial offsets, sizes and strides.
+  // Traverse within the function for each operation.
+  func.walk([&](Operation *op) {
+    if (auto addOp = dyn_cast<AddOp>(op)) {
+      OpBuilder builder(addOp);
+
       SmallVector<OpFoldResult> offsets = {builder.getIndexAttr(START_OFFSET),
                                            builder.getIndexAttr(START_OFFSET)};
       SmallVector<OpFoldResult> sizes = {builder.getIndexAttr(TILE_SIZE),
@@ -52,49 +56,103 @@ struct TilingPass
       SmallVector<OpFoldResult> strides = {builder.getIndexAttr(1),
                                            builder.getIndexAttr(1)};
 
-      // Compute tiling result.
       FailureOr<TilingResult> tilingResult =
-          op.getTiledImplementation(builder, offsets, sizes);
+          addOp.getTiledImplementation(builder, offsets, sizes);
       if (failed(tilingResult)) {
-        op.emitError("Tiling failed.");
-        return;
+        addOp.emitError("Tiling failed for AddOp");
+        return signalPassFailure();
       }
 
-      // Get the result type and create an empty result tensor.
-      auto resultType = op.getType().cast<RankedTensorType>();
-      Value resultTensor = builder.create<tensor::EmptyOp>(
-          op.getLoc(), resultType.getShape(), resultType.getElementType());
+      auto loc = addOp.getLoc();
 
-      // Result tensor shape and size.
-      auto resultTensorShape = resultType.getShape();
-      SmallVector<OpFoldResult> resultTensorSize = {
-          builder.getIndexAttr(resultTensorShape[0]),
-          builder.getIndexAttr(resultTensorShape[1])};
+      auto resultTensorType =
+          addOp.getResult().getType().cast<RankedTensorType>();
+      auto resultTensorShape = resultTensorType.getShape();
+
+      Value resultTensor = builder.create<tensor::EmptyOp>(
+          loc, resultTensorShape, resultTensorType.getElementType());
 
       // Current tile.
       Value *currentTile = tilingResult->tiledValues.begin();
 
-      // Insert result tile values in the result tensor.
       for (int64_t i = START_OFFSET; i < resultTensorShape[0]; i += TILE_SIZE) {
         for (int64_t j = START_OFFSET; j < resultTensorShape[1];
-             j += TILE_SIZE) {
-          SmallVector<OpFoldResult> currentOffset = {builder.getIndexAttr(i),
-                                                     builder.getIndexAttr(j)};
+             j += TILE_SIZE, ++currentTile) {
+          int64_t resultTileHeight =
+              std::min(TILE_SIZE, resultTensorShape[0] - i);
+          int64_t resultTileWidth =
+              std::min(TILE_SIZE, resultTensorShape[1] - j);
 
+          SmallVector<OpFoldResult> tiledResultOffsets = {
+              builder.getIndexAttr(i), builder.getIndexAttr(j)};
+          SmallVector<OpFoldResult> tiledResultSizes = {
+              builder.getIndexAttr(resultTileHeight),
+              builder.getIndexAttr(resultTileWidth)};
+
+          // Insert the current tile to the result tensor.
           resultTensor = builder.create<tensor::InsertSliceOp>(
-              op.getLoc(), *currentTile, resultTensor, currentOffset,
-              resultTensorSize, strides);
-          ++currentTile;
+              loc, *currentTile, resultTensor, tiledResultOffsets,
+              tiledResultSizes, strides);
         }
       }
 
-      // Replace all uses of this operation with the resulting tensor.
-      op.replaceAllUsesWith(resultTensor);
-      op.erase();
-    });
-  }
-};
-} // namespace
+      addOp.replaceAllUsesWith(resultTensor);
+      addOp.erase();
+    } else if (auto mulOp = dyn_cast<MulOp>(op)) {
+      OpBuilder builder(mulOp);
+
+      SmallVector<OpFoldResult> offsets = {builder.getIndexAttr(START_OFFSET),
+                                           builder.getIndexAttr(START_OFFSET)};
+      SmallVector<OpFoldResult> sizes = {builder.getIndexAttr(TILE_SIZE),
+                                         builder.getIndexAttr(TILE_SIZE)};
+      SmallVector<OpFoldResult> strides = {builder.getIndexAttr(1),
+                                           builder.getIndexAttr(1)};
+
+      FailureOr<TilingResult> tilingResult =
+          mulOp.getTiledImplementation(builder, offsets, sizes);
+      if (failed(tilingResult)) {
+        mulOp.emitError("Tiling failed for AddOp");
+        return signalPassFailure();
+      }
+
+      auto loc = mulOp.getLoc();
+
+      auto resultTensorType =
+          mulOp.getResult().getType().cast<RankedTensorType>();
+      auto resultTensorShape = resultTensorType.getShape();
+
+      Value resultTensor = builder.create<tensor::EmptyOp>(
+          loc, resultTensorShape, resultTensorType.getElementType());
+
+      // Current tile.
+      Value *currentTile = tilingResult->tiledValues.begin();
+
+      for (int64_t i = START_OFFSET; i < resultTensorShape[0]; i += TILE_SIZE) {
+        for (int64_t j = START_OFFSET; j < resultTensorShape[1];
+             j += TILE_SIZE, ++currentTile) {
+          int64_t resultTileHeight =
+              std::min(TILE_SIZE, resultTensorShape[0] - i);
+          int64_t resultTileWidth =
+              std::min(TILE_SIZE, resultTensorShape[1] - j);
+
+          SmallVector<OpFoldResult> tiledResultOffsets = {
+              builder.getIndexAttr(i), builder.getIndexAttr(j)};
+          SmallVector<OpFoldResult> tiledResultSizes = {
+              builder.getIndexAttr(resultTileHeight),
+              builder.getIndexAttr(resultTileWidth)};
+
+          // Insert the current tile to the result tensor.
+          resultTensor = builder.create<tensor::InsertSliceOp>(
+              loc, *currentTile, resultTensor, tiledResultOffsets,
+              tiledResultSizes, strides);
+        }
+      }
+
+      mulOp.replaceAllUsesWith(resultTensor);
+      mulOp.erase();
+    }
+  });
+}
 
 // Return the tiling pass.
 std::unique_ptr<Pass> mat::createTilingPass() {

@@ -22,7 +22,7 @@ def Mat_Dialect : Dialect {
   let summary = "A high-level dialect for defining matrix operations.";
   let description = [{
     This dialect provides a representation of matrix operations
-    allowing to compute element-wise addition and multiplication
+    allowing to compute addition and multiplication
     with analysis and optimization.
   }];
 

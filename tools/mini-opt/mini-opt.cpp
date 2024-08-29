@@ -123,8 +123,6 @@ int loadMLIR() {
   if (mlir::failed(mlir::applyPassManagerCLOptions(pm)))
     return 4;
 
-  pm.addPass(mlir::createInlinerPass());
-
   // Create tiling pass if enabled.
   if (enableTilePass) {
     pm.addNestedPass<mlir::func::FuncOp>(mlir::mat::createTilingPass());
@@ -132,11 +130,15 @@ int loadMLIR() {
 
   /// Create bufferization pass if enabled.
   if (enableOneShotBufferize) {
-    llvm::errs() << "Enabling one shot bufferization...\n";
     pm.addPass(mlir::bufferization::createOneShotBufferizePass());
     pm.addPass(mlir::arith::createArithBufferizePass());
-    pm.addNestedPass<mlir::func::FuncOp>(mlir::tensor::createTensorBufferizePass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        mlir::tensor::createTensorBufferizePass());
   }
+
+  // Apply optimizations.
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCSEPass());
 
   if (enableLLVMIRDump) {
   }

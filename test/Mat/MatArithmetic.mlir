@@ -5,8 +5,6 @@
 // Test matrix operations.
 //===----------------------------------------------------------------------===//
 
-// Note: Tiling and bufferize is not updated for `mat.mul`. 
-
 // Ideal case when dimensions are perfectly divisible.
 func.func @mat_arithmetic() -> tensor<24x16xi8> {
   %0 = arith.constant dense<1> : tensor<24x32xi8>

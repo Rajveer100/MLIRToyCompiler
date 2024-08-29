@@ -27,7 +27,9 @@
 
 #include "Mat/MatDialect.h"
 #include "Mat/MatOps.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdint>
 #include <sys/_types/_int64_t.h>
@@ -88,6 +90,7 @@ static void printBinaryOp(mlir::OpAsmPrinter &printer, mlir::Operation *op) {
 //===----------------------------------------------------------------===//
 // ConstantOp
 //===----------------------------------------------------------------===//
+
 void ConstantOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
                        int8_t value) {
   auto dataType = RankedTensorType::get({}, builder.getI8Type());
@@ -106,72 +109,6 @@ mlir::ParseResult ConstantOp::parse(mlir::OpAsmParser &parser,
   return success();
 }
 
-/// Return true if the buffer of the given tensor OpOperand is read.
-bool ConstantOp::bufferizesToMemoryRead(
-    OpOperand &opOperand, const bufferization::AnalysisState &state) {
-  return false;
-}
-
-/// Return true if the buffer of the given tensor OpOperand is written (if
-/// bufferizing in-place).
-bool ConstantOp::bufferizesToMemoryWrite(
-    OpOperand &opOperand, const bufferization::AnalysisState &state) {
-  return false;
-}
-
-/// Return the Values that may alias with a given OpOperand when bufferized
-/// in-place.
-bufferization::AliasingValueList
-ConstantOp::getAliasingValues(OpOperand &opOperand,
-                              const bufferization::AnalysisState &state) {
-  bufferization::AliasingValueList aliasedValues;
-  return aliasedValues;
-}
-
-/// Bufferize `ConstantOp` operation by rewriting the op with the given
-/// rewriter.
-mlir::LogicalResult ConstantOp::bufferize(
-    mlir::RewriterBase &rewriter,
-    const mlir::bufferization::BufferizationOptions &options) {
-  // Get the operation and result type.
-  auto constantOp = cast<ConstantOp>(*this);
-  auto tensorType = constantOp.getResult().getType().cast<RankedTensorType>();
-  auto tensorShape = tensorType.getShape();
-
-  // Allocate memory buffer of the appropriate size.
-  auto memrefType =
-      MemRefType::get(tensorType.getShape(), tensorType.getElementType());
-  Value buffer =
-      rewriter.create<memref::AllocOp>(constantOp.getLoc(), memrefType);
-
-  // Get the elements.
-  auto elementsAttr = constantOp.getValue().cast<DenseIntElementsAttr>();
-
-  // Store the constant data into the allocated buffer
-  for (auto index : llvm::enumerate(elementsAttr.getValues<IntegerAttr>())) {
-    // Calculate row and column indices.
-    int64_t flatIndex = index.index();
-    int64_t rowIndex = flatIndex / tensorShape[1];
-    int64_t colIndex = flatIndex % tensorShape[1];
-
-    Value constantIndexRow =
-        rewriter.create<arith::ConstantIndexOp>(constantOp.getLoc(), rowIndex);
-    Value constantIndexCol =
-        rewriter.create<arith::ConstantIndexOp>(constantOp.getLoc(), colIndex);
-
-    Value scalarValue =
-        rewriter.create<arith::ConstantOp>(constantOp.getLoc(), index.value());
-    rewriter.create<memref::StoreOp>(
-        constantOp.getLoc(), scalarValue, buffer,
-        ValueRange{constantIndexRow, constantIndexCol});
-  }
-
-  // Replace the result of the operation with the buffer.
-  bufferization::replaceOpWithBufferizedValues(rewriter, *this, buffer);
-
-  return success();
-}
-
 void ConstantOp::print(mlir::OpAsmPrinter &printer) {
   printer << " ";
   printer.printOptionalAttrDict((*this)->getAttrs(), {"value"});
@@ -179,12 +116,91 @@ void ConstantOp::print(mlir::OpAsmPrinter &printer) {
 }
 
 //===----------------------------------------------------------------===//
+// ConstantOp: Bufferization
+//===----------------------------------------------------------------===//
+
+bool ConstantOp::bufferizesToMemoryRead(
+    OpOperand &opOperand, const bufferization::AnalysisState &state) {
+  return false;
+}
+
+bool ConstantOp::bufferizesToMemoryWrite(
+    OpOperand &opOperand, const bufferization::AnalysisState &state) {
+  return false;
+}
+
+bufferization::AliasingValueList
+ConstantOp::getAliasingValues(OpOperand &opOperand,
+                              const bufferization::AnalysisState &state) {
+  bufferization::AliasingValueList aliasedValues;
+  return aliasedValues;
+}
+
+mlir::LogicalResult ConstantOp::bufferize(
+    mlir::RewriterBase &rewriter,
+    const mlir::bufferization::BufferizationOptions &options) {
+  auto result = getResult();
+  auto loc = getLoc();
+
+  auto resultTensorType = result.getType().cast<RankedTensorType>();
+  auto resultTensorShape = resultTensorType.getShape();
+
+  // Allocate memory buffer of the appropriate size.
+  auto memRefType =
+      MemRefType::get(resultTensorShape, resultTensorType.getElementType());
+  Value resultBuffer = rewriter.create<memref::AllocOp>(loc, memRefType);
+
+  auto elementsAttr = getValue().cast<DenseIntElementsAttr>();
+  for (auto index : llvm::enumerate(elementsAttr.getValues<IntegerAttr>())) {
+    // Calculate row and column indices.
+    int64_t flatIndex = index.index();
+    int64_t rowIndex = flatIndex / resultTensorShape[1];
+    int64_t colIndex = flatIndex % resultTensorShape[1];
+
+    Value constantIndexRow =
+        rewriter.create<arith::ConstantIndexOp>(loc, rowIndex);
+    Value constantIndexCol =
+        rewriter.create<arith::ConstantIndexOp>(loc, colIndex);
+
+    Value scalarValue = rewriter.create<arith::ConstantOp>(loc, index.value());
+
+    // Store in the result buffer.
+    rewriter.create<memref::StoreOp>(
+        loc, scalarValue, resultBuffer,
+        ValueRange{constantIndexRow, constantIndexCol});
+  }
+
+  bufferization::replaceOpWithBufferizedValues(rewriter, *this, resultBuffer);
+  return success();
+}
+
+//===----------------------------------------------------------------===//
 // AddOp
 //===----------------------------------------------------------------===//
+
 void AddOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
                   mlir::Value lhs, mlir::Value rhs) {
   state.addTypes(UnrankedTensorType::get(builder.getI8Type()));
   state.addOperands({lhs, rhs});
+}
+
+LogicalResult AddOp::verify() {
+  auto lhsShape = getLhs().getType().cast<RankedTensorType>().getShape();
+  auto rhsShape = getRhs().getType().cast<RankedTensorType>().getShape();
+  auto resultShape = getResult().getType().cast<RankedTensorType>().getShape();
+
+  // Ensure operands have valid dimensions.
+  if (lhsShape[0] != rhsShape[0] || lhsShape[1] != rhsShape[1])
+    return emitOpError("invalid dimensions for matrix addition ")
+           << lhsShape << " != " << rhsShape;
+
+  if (resultShape[0] != lhsShape[0] || resultShape[1] != rhsShape[1])
+    return emitOpError("invalid dimensions for result ")
+           << "(" << resultShape[0] << " " << resultShape[1] << ")"
+           << " != "
+           << "(" << lhsShape[0] << " " << rhsShape[1] << ")";
+
+  return success();
 }
 
 mlir::ParseResult AddOp::parse(mlir::OpAsmParser &parser,
@@ -192,7 +208,12 @@ mlir::ParseResult AddOp::parse(mlir::OpAsmParser &parser,
   return parseBinaryOp(parser, result);
 }
 
-/// Returns tiled implementation of the `AddOp` operation.
+void AddOp::print(mlir::OpAsmPrinter &p) { printBinaryOp(p, *this); }
+
+//===----------------------------------------------------------------===//
+// AddOp: Tiling
+//===----------------------------------------------------------------===//
+
 FailureOr<TilingResult>
 AddOp::getTiledImplementation(OpBuilder &builder,
                               ArrayRef<OpFoldResult> offsets,
@@ -204,30 +225,24 @@ AddOp::getTiledImplementation(OpBuilder &builder,
 
   SmallVector<int64_t> offsetValues, sizeValues;
 
-  // Extract offsets from fold results.
   if (auto offsetValuesOpt = mlir::getConstantIntValues(offsets))
     offsetValues = *offsetValuesOpt;
   else
     return failure();
 
-  // Extract sizes from fold results.
   if (auto sizeValuesOpt = mlir::getConstantIntValues(sizes))
     sizeValues = *sizeValuesOpt;
   else
     return failure();
 
-  // Create vectors to hold the tiled values and operations
-  SmallVector<Operation *> tiledOps;
-  SmallVector<Value> tiledValues;
+  auto lhs = getLhs();
+  auto rhs = getRhs();
+  auto result = getResult();
 
-  // Get tensor operands and loc.
-  Value lhs = getOperand(0);
-  Value rhs = getOperand(1);
   Location loc = getLoc();
 
-  // Get the tensor types and dimensions.
-  auto tensorType = lhs.getType().cast<RankedTensorType>();
-  auto tensorShape = tensorType.getShape();
+  auto resultTensorType = result.getType().cast<RankedTensorType>();
+  auto resultTensorShape = resultTensorType.getShape();
 
   // Tile dimensions.
   int64_t tileHeight = sizeValues[0];
@@ -237,64 +252,63 @@ AddOp::getTiledImplementation(OpBuilder &builder,
   int64_t startOffsetH = offsetValues[0];
   int64_t startOffsetW = offsetValues[1];
 
-  // Create a loop to generate tiles
-  for (int64_t i = startOffsetH; i < tensorShape[0]; i += tileHeight) {
-    for (int64_t j = startOffsetW; j < tensorShape[1]; j += tileWidth) {
+  SmallVector<Operation *> tiledOps;
+  SmallVector<Value> tiledValues;
+
+  // Generate tiles.
+  for (int64_t i = startOffsetH; i < resultTensorShape[0]; i += tileHeight) {
+    for (int64_t j = startOffsetW; j < resultTensorShape[1]; j += tileWidth) {
       // Take care of bounds.
-      int64_t actualTileHeight = std::min(tileHeight, tensorShape[0] - i);
-      int64_t actualTileWidth = std::min(tileWidth, tensorShape[1] - j);
+      int64_t resultTileHeight = std::min(tileHeight, resultTensorShape[0] - i);
+      int64_t resultTileWidth = std::min(tileWidth, resultTensorShape[1] - j);
 
-      auto currentTileShape =
-          SmallVector<int64_t, 2>{actualTileHeight, actualTileWidth};
-      auto subTensorType =
-          RankedTensorType::get(currentTileShape, builder.getIntegerType(8));
+      auto tiledResultTensorShape =
+          SmallVector<int64_t, 2>{resultTileHeight, resultTileWidth};
+      auto tiledResultTensorType = RankedTensorType::get(
+          tiledResultTensorShape, builder.getIntegerType(8));
 
-      SmallVector<OpFoldResult> offsets = {builder.getIndexAttr(i),
-                                           builder.getIndexAttr(j)};
-      SmallVector<OpFoldResult> sizes = {builder.getIndexAttr(actualTileHeight),
-                                         builder.getIndexAttr(actualTileWidth)};
-      SmallVector<OpFoldResult> strides = {builder.getIndexAttr(1),
-                                           builder.getIndexAttr(1)};
+      SmallVector<OpFoldResult> tiledResultOffsets = {builder.getIndexAttr(i),
+                                                      builder.getIndexAttr(j)};
+      SmallVector<OpFoldResult> tiledResultSizes = {
+          builder.getIndexAttr(resultTileHeight),
+          builder.getIndexAttr(resultTileWidth)};
+      SmallVector<OpFoldResult> tiledResultStrides = {builder.getIndexAttr(1),
+                                                      builder.getIndexAttr(1)};
 
       // Extract the slices.
-      auto subTensorLhs = builder.create<tensor::ExtractSliceOp>(
-          loc, subTensorType, lhs, offsets, sizes, strides);
-      auto subTensorRhs = builder.create<tensor::ExtractSliceOp>(
-          loc, subTensorType, rhs, offsets, sizes, strides);
+      auto tiledLhsTensor = builder.create<tensor::ExtractSliceOp>(
+          loc, tiledResultTensorType, lhs, tiledResultOffsets, tiledResultSizes,
+          tiledResultStrides);
+      auto tiledRhsTensor = builder.create<tensor::ExtractSliceOp>(
+          loc, tiledResultTensorType, rhs, tiledResultOffsets, tiledResultSizes,
+          tiledResultStrides);
 
       // Perform the operation on the extracted slices.
-      auto resultTile =
-          builder.create<AddOp>(loc, subTensorType, subTensorLhs, subTensorRhs);
-
-      // Insert the result back into the result tensor.
-      Value resultTensor = builder.create<tensor::InsertSliceOp>(
-          loc, resultTile, lhs, offsets, sizes, strides);
+      auto tiledResult = builder.create<AddOp>(loc, tiledResultTensorType,
+                                               tiledLhsTensor, tiledRhsTensor);
 
       // Store the tiled operation and result.
-      tiledOps.push_back(resultTile);
-      tiledValues.push_back(resultTensor);
+      tiledOps.push_back(tiledResult.getOperation());
+      tiledValues.push_back(tiledResult);
     }
   }
-
-  // Return the results of the tiling
   return TilingResult{tiledOps, tiledValues};
 }
 
-/// Return true if the buffer of the given tensor OpOperand is read.
+//===----------------------------------------------------------------===//
+// AddOp: Bufferization
+//===----------------------------------------------------------------===//
+
 bool AddOp::bufferizesToMemoryRead(OpOperand &opOperand,
                                    const bufferization::AnalysisState &state) {
   return false;
 }
 
-/// Return true if the buffer of the given tensor OpOperand is written (if
-/// bufferizing in-place).
 bool AddOp::bufferizesToMemoryWrite(OpOperand &opOperand,
                                     const bufferization::AnalysisState &state) {
   return false;
 }
 
-/// Return the Values that may alias with a given OpOperand when bufferized
-/// in-place.
 bufferization::AliasingValueList
 AddOp::getAliasingValues(OpOperand &opOperand,
                          const bufferization::AnalysisState &state) {
@@ -302,69 +316,77 @@ AddOp::getAliasingValues(OpOperand &opOperand,
   return aliasedValues;
 }
 
-/// Bufferize `AddOp` operation by rewriting the op with the given rewriter.
 mlir::LogicalResult
 AddOp::bufferize(mlir::RewriterBase &rewriter,
                  const mlir::bufferization::BufferizationOptions &options) {
-  // Get the operation and result type.
-  auto addOp = cast<AddOp>(*this);
+  auto result = getResult();
+  auto loc = getLoc();
 
-  // Get operands and result.
-  auto lhs = addOp.getOperand(0);
-  auto rhs = addOp.getOperand(1);
-  auto result = addOp.getResult();
-
-  // Get tensor type and shape.
-  auto tensorType = result.getType().cast<RankedTensorType>();
-  auto tensorShape = tensorType.getShape();
+  auto resultTensorType = result.getType().cast<RankedTensorType>();
+  auto resultTensorShape = resultTensorType.getShape();
 
   // Get operand buffers.
-  auto lhsBuffer = bufferization::getBuffer(rewriter, lhs, options);
-  auto rhsBuffer = bufferization::getBuffer(rewriter, rhs, options);
+  auto lhsBuffer = bufferization::getBuffer(rewriter, getLhs(), options);
+  auto rhsBuffer = bufferization::getBuffer(rewriter, getRhs(), options);
 
   // Allocate memory buffer of the appropriate size.
-  auto memrefType =
-      MemRefType::get(tensorType.getShape(), tensorType.getElementType());
-  Value resultBuffer =
-      rewriter.create<memref::AllocOp>(addOp.getLoc(), memrefType);
+  auto memRefType =
+      MemRefType::get(resultTensorShape, resultTensorType.getElementType());
+  Value resultBuffer = rewriter.create<memref::AllocOp>(loc, memRefType);
 
-  for (int64_t i = 0; i < tensorShape[0]; ++i) {
-    for (int64_t j = 0; j < tensorShape[1]; ++j) {
-      Value constantIndexRow =
-          rewriter.create<arith::ConstantIndexOp>(addOp.getLoc(), i);
-      Value constantIndexCol =
-          rewriter.create<arith::ConstantIndexOp>(addOp.getLoc(), j);
+  for (int64_t i = 0; i < resultTensorShape[0]; ++i) {
+    for (int64_t j = 0; j < resultTensorShape[1]; ++j) {
+      Value constantIndexRow = rewriter.create<arith::ConstantIndexOp>(loc, i);
+      Value constantIndexCol = rewriter.create<arith::ConstantIndexOp>(loc, j);
 
+      // Load the lhs and rhs elements.
       auto lhsElement = rewriter.create<memref::LoadOp>(
-          addOp.getLoc(), *lhsBuffer,
-          ValueRange{constantIndexRow, constantIndexCol});
+          loc, *lhsBuffer, ValueRange{constantIndexRow, constantIndexCol});
       auto rhsElement = rewriter.create<memref::LoadOp>(
-          addOp.getLoc(), *rhsBuffer,
-          ValueRange{constantIndexRow, constantIndexCol});
+          loc, *rhsBuffer, ValueRange{constantIndexRow, constantIndexCol});
 
-      auto resultElement = rewriter.create<arith::AddIOp>(
-          addOp.getLoc(), lhsElement, rhsElement);
+      // Perform the operation.
+      auto resultElement =
+          rewriter.create<arith::AddIOp>(loc, lhsElement, rhsElement);
 
+      // Store the result.
       rewriter.create<memref::StoreOp>(
-          addOp.getLoc(), resultElement, resultBuffer,
+          loc, resultElement, resultBuffer,
           ValueRange{constantIndexRow, constantIndexCol});
     }
   }
 
-  // Replace the result of the operation with the buffer.
   bufferization::replaceOpWithBufferizedValues(rewriter, *this, resultBuffer);
   return success();
 }
 
-void AddOp::print(mlir::OpAsmPrinter &p) { printBinaryOp(p, *this); }
-
 //===----------------------------------------------------------------===//
 // MulOp
 //===----------------------------------------------------------------===//
+
 void MulOp::build(mlir::OpBuilder &builder, mlir::OperationState &state,
                   mlir::Value lhs, mlir::Value rhs) {
   state.addTypes(UnrankedTensorType::get(builder.getI8Type()));
   state.addOperands({lhs, rhs});
+}
+
+LogicalResult MulOp::verify() {
+  auto lhsShape = getLhs().getType().cast<RankedTensorType>().getShape();
+  auto rhsShape = getRhs().getType().cast<RankedTensorType>().getShape();
+  auto resultShape = getResult().getType().cast<RankedTensorType>().getShape();
+
+  // Ensure operands have valid dimensions.
+  if (lhsShape[1] != rhsShape[0])
+    return emitOpError("invalid dimensions for lhs and rhs ")
+           << lhsShape[1] << " != " << rhsShape[0];
+
+  if (resultShape[0] != lhsShape[0] || resultShape[1] != rhsShape[1])
+    return emitOpError("invalid dimensions for result ")
+           << "(" << resultShape[0] << " " << resultShape[1] << ")"
+           << " != "
+           << "(" << lhsShape[0] << " " << rhsShape[1] << ")";
+
+  return success();
 }
 
 mlir::ParseResult MulOp::parse(mlir::OpAsmParser &parser,
@@ -372,30 +394,140 @@ mlir::ParseResult MulOp::parse(mlir::OpAsmParser &parser,
   return parseBinaryOp(parser, result);
 }
 
-/// Returns tiled implementation of the `MulOp` operation.
+void MulOp::print(mlir::OpAsmPrinter &p) { printBinaryOp(p, *this); }
+
+//===----------------------------------------------------------------===//
+// MulOp: Tiling
+//===----------------------------------------------------------------===//
+
 FailureOr<TilingResult>
 MulOp::getTiledImplementation(OpBuilder &builder,
                               ArrayRef<OpFoldResult> offsets,
                               ArrayRef<OpFoldResult> sizes) {
-  // Todo: Needs little extra care.
-  return success();
+  // Ensure the sizes and offsets are valid
+  if (offsets.size() != sizes.size() || offsets.size() != 2) {
+    return failure();
+  }
+
+  SmallVector<int64_t> offsetValues, sizeValues;
+
+  if (auto offsetValuesOpt = mlir::getConstantIntValues(offsets))
+    offsetValues = *offsetValuesOpt;
+  else
+    return failure();
+
+  if (auto sizeValuesOpt = mlir::getConstantIntValues(sizes))
+    sizeValues = *sizeValuesOpt;
+  else
+    return failure();
+
+  auto lhs = getLhs();
+  auto rhs = getRhs();
+  auto result = getResult();
+
+  Location loc = getLoc();
+
+  // Get the tensor types and dimensions.
+  auto lhsTensorType = lhs.getType().cast<RankedTensorType>();
+  auto rhsTensorType = rhs.getType().cast<RankedTensorType>();
+  auto resultTensorType = result.getType().cast<RankedTensorType>();
+
+  auto lhsTensorShape = lhsTensorType.getShape();
+  auto rhsTensorShape = rhsTensorType.getShape();
+  auto resultTensorShape = resultTensorType.getShape();
+
+  // Tile dimensions.
+  int64_t tileHeight = sizeValues[0];
+  int64_t tileWidth = sizeValues[1];
+
+  // Start offsets.
+  int64_t startOffsetH = offsetValues[0];
+  int64_t startOffsetW = offsetValues[1];
+
+  SmallVector<Operation *> tiledOps;
+  SmallVector<Value> tiledValues;
+
+  // Generate tiles.
+  for (int64_t i = startOffsetH; i < resultTensorShape[0]; i += tileHeight) {
+    for (int64_t j = startOffsetW; j < resultTensorShape[1]; j += tileWidth) {
+      // Take care of bounds.
+      int64_t lhsTileHeight = std::min(tileHeight, lhsTensorShape[0] - i);
+      int64_t lhsTileWidth = lhsTensorShape[1];
+
+      int64_t rhsTileHeight = lhsTensorShape[1];
+      int64_t rhsTileWidth = std::min(tileWidth, rhsTensorShape[1] - j);
+
+      int64_t resultTileHeight = std::min(tileHeight, lhsTensorShape[0] - i);
+      int64_t resultTileWidth = std::min(tileWidth, rhsTensorShape[1] - j);
+
+      auto tiledLhsShape = SmallVector<int64_t, 2>{lhsTileHeight, lhsTileWidth};
+      auto tiledLhsTensorType =
+          RankedTensorType::get(tiledLhsShape, builder.getIntegerType(8));
+
+      auto tiledRhsShape = SmallVector<int64_t, 2>{rhsTileHeight, rhsTileWidth};
+      auto tiledRhsTensorType =
+          RankedTensorType::get(tiledRhsShape, builder.getIntegerType(8));
+
+      auto tiledResultShape =
+          SmallVector<int64_t, 2>{resultTileHeight, resultTileWidth};
+      auto tiledResultTensorType =
+          RankedTensorType::get(tiledResultShape, builder.getIntegerType(8));
+
+      SmallVector<OpFoldResult> tiledLhsOffsets = {builder.getIndexAttr(i),
+                                                   builder.getIndexAttr(0)};
+      SmallVector<OpFoldResult> tiledLhsSizes = {
+          builder.getIndexAttr(lhsTileHeight),
+          builder.getIndexAttr(lhsTileWidth)};
+
+      SmallVector<OpFoldResult> tiledRhsOffsets = {builder.getIndexAttr(0),
+                                                   builder.getIndexAttr(j)};
+      SmallVector<OpFoldResult> tiledRhsSizes = {
+          builder.getIndexAttr(rhsTileHeight),
+          builder.getIndexAttr(rhsTileWidth)};
+
+      SmallVector<OpFoldResult> tiledResultOffsets = {builder.getIndexAttr(i),
+                                                      builder.getIndexAttr(j)};
+      SmallVector<OpFoldResult> tiledResultSizes = {
+          builder.getIndexAttr(resultTileHeight),
+          builder.getIndexAttr(resultTileWidth)};
+
+      SmallVector<OpFoldResult> tiledStrides = {builder.getIndexAttr(1),
+                                                builder.getIndexAttr(1)};
+
+      // Extract the slices.
+      auto tiledTensorLhs = builder.create<tensor::ExtractSliceOp>(
+          loc, tiledLhsTensorType, lhs, tiledLhsOffsets, tiledLhsSizes,
+          tiledStrides);
+      auto tiledTensorRhs = builder.create<tensor::ExtractSliceOp>(
+          loc, tiledRhsTensorType, rhs, tiledRhsOffsets, tiledRhsSizes,
+          tiledStrides);
+
+      // Perform the operation on the extracted slices.
+      auto tiledResult = builder.create<MulOp>(loc, tiledResultTensorType,
+                                               tiledTensorLhs, tiledTensorRhs);
+
+      // Store the tiled operation and result.
+      tiledOps.push_back(tiledResult.getOperation());
+      tiledValues.push_back(tiledResult);
+    }
+  }
+  return TilingResult{tiledOps, tiledValues};
 }
 
-/// Return true if the buffer of the given tensor OpOperand is read.
+//===----------------------------------------------------------------===//
+// MulOp: Bufferization
+//===----------------------------------------------------------------===//
+
 bool MulOp::bufferizesToMemoryRead(OpOperand &opOperand,
                                    const bufferization::AnalysisState &state) {
   return false;
 }
 
-/// Return true if the buffer of the given tensor OpOperand is written (if
-/// bufferizing in-place).
 bool MulOp::bufferizesToMemoryWrite(OpOperand &opOperand,
                                     const bufferization::AnalysisState &state) {
   return false;
 }
 
-/// Return the Values that may alias with a given OpOperand when bufferized
-/// in-place.
 bufferization::AliasingValueList
 MulOp::getAliasingValues(OpOperand &opOperand,
                          const bufferization::AnalysisState &state) {
@@ -403,12 +535,45 @@ MulOp::getAliasingValues(OpOperand &opOperand,
   return aliasedValues;
 }
 
-/// Bufferize `MulOp` operation by rewriting the op with the given rewriter.
 mlir::LogicalResult
 MulOp::bufferize(mlir::RewriterBase &rewriter,
                  const mlir::bufferization::BufferizationOptions &options) {
-  // Todo: Needs little extra care.
+  auto result = getResult();
+  auto loc = getLoc();
+
+  auto resultTensorType = result.getType().cast<RankedTensorType>();
+  auto resultTensorShape = resultTensorType.getShape();
+
+  // Get operand buffers.
+  auto lhsBuffer = bufferization::getBuffer(rewriter, getLhs(), options);
+  auto rhsBuffer = bufferization::getBuffer(rewriter, getRhs(), options);
+
+  // Allocate memory buffer of the appropriate size.
+  auto memRefType =
+      MemRefType::get(resultTensorShape, resultTensorType.getElementType());
+  Value resultBuffer = rewriter.create<memref::AllocOp>(loc, memRefType);
+
+  for (int64_t i = 0; i < resultTensorShape[0]; ++i) {
+    for (int64_t j = 0; j < resultTensorShape[1]; ++j) {
+      Value constantIndexRow = rewriter.create<arith::ConstantIndexOp>(loc, i);
+      Value constantIndexCol = rewriter.create<arith::ConstantIndexOp>(loc, j);
+
+      auto lhsElement = rewriter.create<memref::LoadOp>(
+          loc, *lhsBuffer, ValueRange{constantIndexRow, constantIndexCol});
+      auto rhsElement = rewriter.create<memref::LoadOp>(
+          loc, *rhsBuffer, ValueRange{constantIndexRow, constantIndexCol});
+
+      // Perform the operation.
+      auto resultElement =
+          rewriter.create<arith::MulIOp>(loc, lhsElement, rhsElement);
+
+      // Store the result.
+      rewriter.create<memref::StoreOp>(
+          loc, resultElement, resultBuffer,
+          ValueRange{constantIndexRow, constantIndexCol});
+    }
+  }
+
+  bufferization::replaceOpWithBufferizedValues(rewriter, *this, resultBuffer);
   return success();
 }
-
-void MulOp::print(mlir::OpAsmPrinter &p) { printBinaryOp(p, *this); }
