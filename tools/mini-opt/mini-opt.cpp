@@ -56,15 +56,18 @@ static cl::opt<std::string> inputFilename(cl::Positional,
                                           cl::init("-"),
                                           cl::value_desc("filename"));
 
-static cl::opt<bool> enableTilePass("tile-pass",
-                                    cl::desc("Enable the Tiling Pass"),
+static cl::opt<bool> enableTilePass("tile-ops", cl::desc("Enable Tiling"),
                                     cl::init(false));
 
 static cl::opt<bool> enableOneShotBufferize("one-shot-bufferize",
                                             cl::desc("Enable Bufferization"),
                                             cl::init(false));
 
-static cl::opt<bool> enableLLVMIRDump("dump-llvm-ir", cl::desc("Dump LLVM IR"),
+static cl::opt<bool> enableLowerToAffine("lower-to-affine",
+                                         cl::desc("Enable Affine Lowering"),
+                                         cl::init(false));
+
+static cl::opt<bool> enableLowerToLLVM("lower-to-llvm", cl::desc("Enable LLVM Lowering"),
                                       cl::init(false));
 
 /// Loads MLIR.
@@ -121,7 +124,7 @@ int loadMLIR() {
 
   mlir::PassManager pm(module.get()->getName());
   if (mlir::failed(mlir::applyPassManagerCLOptions(pm)))
-    return 4;
+    return 4; 
 
   // Create tiling pass if enabled.
   if (enableTilePass) {
@@ -136,11 +139,18 @@ int loadMLIR() {
         mlir::tensor::createTensorBufferizePass());
   }
 
+  // Create affine lowering pass if enabled.
+  if (enableLowerToAffine) {
+    pm.addPass(mlir::mat::createLowerToAffinePass());
+  }
+
   // Apply optimizations.
   pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
   pm.addNestedPass<mlir::func::FuncOp>(mlir::createCSEPass());
 
-  if (enableLLVMIRDump) {
+  // Create LLVM lowering pass if enabled.
+  if (enableLowerToLLVM) {
+    pm.addPass(mlir::mat::createLowerToLLVMPass());
   }
 
   if (mlir::failed(pm.run(*module))) {
@@ -148,7 +158,7 @@ int loadMLIR() {
     return 4;
   }
 
-  if (enableLLVMIRDump) {
+  if (enableLowerToLLVM) {
     if (int error = dumpLLVMIR(*module))
       return error;
   } else {

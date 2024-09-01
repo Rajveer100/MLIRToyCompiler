@@ -41,8 +41,9 @@ build/bin/mini-opt test/<test_folder>/<test_file>
 
 Passes supported:
 
-- `-tile-pass`
+- `-tile-ops`
 - `-one-shot-bufferize`
-- `-dump-llvm-ir` (in progress)
+- `-lower-to-affine` (in progress)
+- `-lower-to-llvm` (in progress)
 
-Once the `-dump-llvm-ir` pass is complete, it can be piped to the MLIR cpu runner (will be added soon).
+Once the `-lower-to-llvm` pass is complete, it can be piped to the MLIR cpu runner (will be added soon).
