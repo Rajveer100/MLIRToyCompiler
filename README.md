@@ -1,6 +1,6 @@
-# MiniToyCompiler
+# MLIRToyCompiler
 
-Mini Toy MLIR Compiler lowering a sequence of matrix operations, with Tiling and Bufferization.
+MLIR Toy Compiler lowering a sequence of matrix operations, with Tiling and Bufferization.
 
 # Description
 
@@ -31,19 +31,62 @@ ninja -C build/
 ```
 
 Once build is successful, the `mini-opt` tool will be generated. The tests can be executed manually
-as of now, support for LLVM Lit infrastructure will be added soon.
-
-```Shell
-
-build/bin/mini-opt test/<test_folder>/<test_file>
-
-```
+as of now, support for LLVM Lit infrastructure and FileCheck will be added soon.
 
 Passes supported:
 
 - `-tile-ops`
 - `-one-shot-bufferize`
-- `-lower-to-affine` (in progress)
-- `-lower-to-llvm` (in progress)
+- `-lower-to-affine`
+- `-lower-to-llvm`
 
-Once the `-lower-to-llvm` pass is complete, it can be piped to the MLIR cpu runner (will be added soon).
+Examples:
+
+Tiling:
+
+```Shell
+build/bin/mini-opt -tile-ops test/<test_folder>/<test_file>
+```
+
+Tiling with Bufferization:
+
+```Shell
+build/bin/mini-opt -tile-ops -one-shot-bufferize test/<test_folder>/<test_file>
+```
+
+Affine (partial) lowering:
+
+```Shell
+build/bin/mini-opt -lower-to-affine test/<test_folder>/<test_file>
+```
+
+Affine (partial) + LLVM (full) lowering:
+
+```Shell
+build/bin/mini-opt -lower-to-affine -lower-to-llvm test/<test_folder>/<test_file>
+```
+
+Note:
+
+The following pass combination requires `ExtractSliceOpLowering` and `InsertSliceOpLowering`
+which will be added in the next commit:
+
+```Shell
+build/bin/mini-opt -tile-ops -lower-to-affine -lower-to-llvm test/<test_folder>/<test_file>
+```
+
+The full lowering can then be piped to the `mlir-translate` tool 
+to get final LLVM IR:
+
+```Shell
+build/bin/mini-opt -lower-to-affine -lower-to-llvm test/<test_folder>/<test_file> | 
+/opt/homebrew/Cellar/llvm/18.1.8/bin/mlir-translate -mlir-to-llvmir
+```
+
+This can further be passed to `llc` to get assembly code:
+
+```Shell
+build/bin/mini-opt -lower-to-affine -lower-to-llvm test/<test_folder>/<test_file> | 
+/opt/homebrew/Cellar/llvm/18.1.8/bin/mlir-translate -mlir-to-llvmir |
+/opt/homebrew/Cellar/llvm/18.1.8/bin/llc
+```

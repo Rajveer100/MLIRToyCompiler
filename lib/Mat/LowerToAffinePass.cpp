@@ -10,11 +10,22 @@
 //===----------------------------------------------------------===//
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -66,6 +77,7 @@ static void lowerOpToLoops(Operation *op, ValueRange operands,
   // Create a nest of affine loops.
   SmallVector<int64_t, 4> lowerBounds(tensorType.getRank(), /*Value=*/0);
   SmallVector<int64_t, 4> steps(tensorType.getRank(), /*Value=*/1);
+
   affine::buildAffineLoopNest(
       rewriter, loc, lowerBounds, tensorType.getShape(), steps,
       [&](OpBuilder &nestedBuilder, Location loc, ValueRange ivs) {
@@ -93,23 +105,71 @@ struct BinaryOpLowering : public ConversionPattern {
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const final {
     auto loc = op->getLoc();
-    lowerOpToLoops(op, operands, rewriter,
-                   [loc](OpBuilder &builder, ValueRange memRefOperands,
-                         ValueRange loopIvs) {
-                     // Generate an adaptor for the remapped operands of the
-                     // BinaryOp.
-                     typename BinaryOp::Adaptor binaryAdaptor(memRefOperands);
+    auto opName = op->getName().getStringRef();
 
-                     // Generate loads for lhs and rhs at the inner loop.
-                     auto loadedLhs = builder.create<affine::AffineLoadOp>(
-                         loc, binaryAdaptor.getLhs(), loopIvs);
-                     auto loadedRhs = builder.create<affine::AffineLoadOp>(
-                         loc, binaryAdaptor.getRhs(), loopIvs);
+    if (opName == "mat.add") {
+      lowerOpToLoops(op, operands, rewriter,
+                     [loc](OpBuilder &builder, ValueRange memRefOperands,
+                           ValueRange loopIvs) {
+                       // Generate an adaptor for the remapped operands of the
+                       // BinaryOp.
+                       typename BinaryOp::Adaptor binaryAdaptor(memRefOperands);
 
-                     // Create the binary operation performed.
-                     return builder.create<LoweredBinaryOp>(loc, loadedLhs,
-                                                            loadedRhs);
-                   });
+                       // Generate loads for lhs and rhs at the inner loop.
+                       auto loadedLhs = builder.create<affine::AffineLoadOp>(
+                           loc, binaryAdaptor.getLhs(), loopIvs);
+                       auto loadedRhs = builder.create<affine::AffineLoadOp>(
+                           loc, binaryAdaptor.getRhs(), loopIvs);
+
+                       // Create the binary operation performed.
+                       return builder.create<LoweredBinaryOp>(loc, loadedLhs,
+                                                              loadedRhs);
+                     });
+    } else if (opName == "mat.mul") {
+      lowerOpToLoops(
+          op, operands, rewriter,
+          [loc](OpBuilder &builder, ValueRange memRefOperands,
+                ValueRange loopIvs) {
+            // Generate an adaptor for the remapped operands of the
+            // BinaryOp.
+            typename BinaryOp::Adaptor binaryAdaptor(memRefOperands);
+
+            auto lhsType =
+                binaryAdaptor.getLhs().getType().template cast<ShapedType>();
+
+            Value result = builder.create<arith::ConstantOp>(
+                loc, builder.getIntegerAttr(lhsType.getElementType(), 0));
+
+            // Create accumulator loop and pass result as loop-carried argument.
+            auto accDim = lhsType.getShape()[1];
+            auto accLoop = builder.create<affine::AffineForOp>(
+                loc, /*lowerBound*/ 0, /*upperBound*/ accDim, /*step*/ 1,
+                ValueRange{result});
+
+            builder.setInsertionPointToStart(accLoop.getBody());
+
+            // Generate loads for lhs and rhs at the inner loop.
+            auto loadedLhs = builder.create<affine::AffineLoadOp>(
+                loc, binaryAdaptor.getLhs(),
+                ValueRange{loopIvs[0], accLoop.getInductionVar()});
+            auto loadedRhs = builder.create<affine::AffineLoadOp>(
+                loc, binaryAdaptor.getRhs(),
+                ValueRange{accLoop.getInductionVar(), loopIvs[1]});
+
+            Value product =
+                builder.create<LoweredBinaryOp>(loc, loadedLhs, loadedRhs);
+            Value newResult = builder.create<arith::AddIOp>(
+                loc, accLoop.getRegionIterArgs()[0], product);
+
+            // Yield accumulator result back to the loop.
+            builder.create<affine::AffineYieldOp>(loc, newResult);
+
+            builder.setInsertionPointAfter(accLoop);
+
+            // Return the accumulated result.
+            return accLoop.getResult(0);
+          });
+    }
     return success();
   }
 };
@@ -175,6 +235,105 @@ struct ConstantOpLowering : public OpRewritePattern<mat::ConstantOp> {
     return success();
   }
 };
+
+//===----------------------------------------------------------===//
+// MatToAffine RewritePatterns: Func operations
+//===----------------------------------------------------------===//
+
+struct FuncOpLowering : public OpRewritePattern<func::FuncOp> {
+  using OpRewritePattern<func::FuncOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(func::FuncOp op,
+                                PatternRewriter &rewriter) const final {
+    // Conversions are handled by the type converter
+    // hence we can just replace it.
+    auto funcOp = rewriter.create<func::FuncOp>(op.getLoc(), op.getName(),
+                                                op.getFunctionType());
+    rewriter.inlineRegionBefore(op.getRegion(), funcOp.getBody(), funcOp.end());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------===//
+// MatToAffine RewritePatterns: Return operations
+//===----------------------------------------------------------===//
+
+struct ReturnOpLowering : public OpRewritePattern<func::ReturnOp> {
+  using OpRewritePattern<func::ReturnOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(func::ReturnOp op,
+                                PatternRewriter &rewriter) const final {
+    // Conversions are handled by the type converter
+    // hence we can just replace it.
+    rewriter.replaceOpWithNewOp<func::ReturnOp>(op, op.getOperands());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------===//
+// MatToAffine RewritePatterns: Call operations
+//===----------------------------------------------------------===//
+
+struct CallOpLowering : public OpRewritePattern<func::CallOp> {
+  using OpRewritePattern<func::CallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(func::CallOp op,
+                                PatternRewriter &rewriter) const final {
+    // Conversions are handled by the type converter
+    // hence we can just replace it.
+    SmallVector<Value, 4> operands = op.getOperands();
+    auto callOp = rewriter.create<func::CallOp>(
+        op.getLoc(), op.getCallee(), op.getResultTypes(), operands);
+    rewriter.replaceOp(op, callOp.getResults());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------===//
+// MatToAffine RewritePatterns: Extract Slice operations
+//===----------------------------------------------------------===//
+
+struct ExtractSliceOpLowering
+    : public OpRewritePattern<tensor::ExtractSliceOp> {
+  using OpRewritePattern<tensor::ExtractSliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp op,
+                                PatternRewriter &rewriter) const final {
+    // ...
+    return success();
+  }
+};
+
+//===----------------------------------------------------------===//
+// MatToAffine RewritePatterns: Insert Slice operations
+//===----------------------------------------------------------===//
+
+struct InsertSliceOpLowering : public OpRewritePattern<tensor::InsertSliceOp> {
+  using OpRewritePattern<tensor::InsertSliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tensor::InsertSliceOp op,
+                                PatternRewriter &rewriter) const final {
+    // ...
+    return success();
+  }
+};
+} // namespace
+
+//===----------------------------------------------------------===//
+// MatToAffineTypeConverter
+//===----------------------------------------------------------===//
+
+/// A type converter to handle tensor to memref conversions
+/// during partial lowering.
+namespace {
+struct MatToAffineTypeConverter : public TypeConverter {
+  MatToAffineTypeConverter(MLIRContext *ctx) {
+    addConversion([](Type type) { return type; });
+    addConversion(
+        [](RankedTensorType type) { return convertTensorToMemRef(type); });
+  }
+};
 } // namespace
 
 //===----------------------------------------------------------===//
@@ -208,7 +367,33 @@ void MatToAffineLoweringPass::runOnOperation() {
 
   // Define set of patterns to lower.
   RewritePatternSet patterns(&getContext());
-  patterns.add<ConstantOpLowering, AddOpLowering, MulOpLowering>(&getContext());
+  MatToAffineTypeConverter typeConverter(&getContext());
+  patterns.add<ConstantOpLowering, AddOpLowering, MulOpLowering, FuncOpLowering,
+               ReturnOpLowering, CallOpLowering>(&getContext());
+
+  // Populate all required conversion patterns with the type converter.
+  populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
+                                                                 typeConverter);
+  target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+    return typeConverter.isSignatureLegal(op.getFunctionType()) &&
+           typeConverter.isLegal(&op.getBody());
+  });
+
+  populateReturnOpTypeConversionPattern(patterns, typeConverter);
+  target.addDynamicallyLegalOp<func::ReturnOp>(
+      [&](func::ReturnOp op) { return typeConverter.isLegal(op); });
+
+  populateCallOpTypeConversionPattern(patterns, typeConverter);
+  target.addDynamicallyLegalOp<func::CallOp>(
+      [&](func::CallOp op) { return typeConverter.isLegal(op); });
+
+  populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
+  target.markUnknownOpDynamicallyLegal([&](Operation *op) {
+    return isNotBranchOpInterfaceOrReturnLikeOp(op) ||
+           isLegalForBranchOpInterfaceTypeConversionPattern(op,
+                                                            typeConverter) ||
+           isLegalForReturnOpTypeConversionPattern(op, typeConverter);
+  });
 
   // Apply partial conversion.
   if (failed(

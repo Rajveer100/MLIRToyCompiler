@@ -17,9 +17,12 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -39,7 +42,9 @@ struct MatToLLVMLoweringPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MatToLLVMLoweringPass)
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect>();
+    registry.insert<LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+                    affine::AffineDialect, scf::SCFDialect,
+                    cf::ControlFlowDialect>();
   }
   void runOnOperation() final;
 };
@@ -55,8 +60,10 @@ void MatToLLVMLoweringPass::runOnOperation() {
   // Define set of patterns to lower.
   RewritePatternSet patterns(&getContext());
   populateAffineToStdConversionPatterns(patterns);
+  populateSCFToControlFlowConversionPatterns(patterns);
   arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
   populateFinalizeMemRefToLLVMConversionPatterns(typeConverter, patterns);
+  cf::populateControlFlowToLLVMConversionPatterns(typeConverter, patterns);
   populateFuncToLLVMConversionPatterns(typeConverter, patterns);
 
   // Apply full conversion.

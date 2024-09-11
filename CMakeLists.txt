@@ -9,6 +9,8 @@ set(CMAKE_CXX_COMPILER "/opt/homebrew/Cellar/llvm/18.1.8/bin/clang++")
 set(CMAKE_CXX_STANDARD 23 CACHE STRING "C++ standard to conform to")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_BUILD_TYPE DEBUG)
+
 # Set cmake export compile commands
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

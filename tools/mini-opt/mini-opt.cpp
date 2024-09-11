@@ -10,6 +10,8 @@
 #include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
@@ -18,17 +20,22 @@
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Func/Extensions/AllExtensions.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/Passes.h"
+#include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/Passes.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
@@ -67,11 +74,13 @@ static cl::opt<bool> enableLowerToAffine("lower-to-affine",
                                          cl::desc("Enable Affine Lowering"),
                                          cl::init(false));
 
-static cl::opt<bool> enableLowerToLLVM("lower-to-llvm", cl::desc("Enable LLVM Lowering"),
-                                      cl::init(false));
+static cl::opt<bool> enableLowerToLLVM("lower-to-llvm",
+                                       cl::desc("Enable LLVM Lowering"),
+                                       cl::init(false));
 
 /// Loads MLIR.
-int loadMLIR();
+int loadMLIR(mlir::MLIRContext &context,
+             mlir::OwningOpRef<mlir::ModuleOp> &module);
 
 /// Dump LLVM IR.
 int dumpLLVMIR(mlir::ModuleOp module);
@@ -85,26 +94,28 @@ int main(int argc, char **argv) {
 
   cl::ParseCommandLineOptions(argc, argv, "Mini Toy Compiler\n");
 
-  if (int error = loadMLIR())
+  mlir::DialectRegistry registry;
+  mlir::MLIRContext context(registry);
+
+  context.getOrLoadDialect<mlir::func::FuncDialect>();
+  context.getOrLoadDialect<mlir::arith::ArithDialect>();
+  context.getOrLoadDialect<mlir::tensor::TensorDialect>();
+  context.getOrLoadDialect<mlir::affine::AffineDialect>();
+  context.getOrLoadDialect<mlir::bufferization::BufferizationDialect>();
+
+  // Load MatDialect.
+  context.getOrLoadDialect<mlir::mat::MatDialect>();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+
+  if (int error = loadMLIR(context, module))
     return error;
 
   return 0;
 }
 
-int loadMLIR() {
-  mlir::MLIRContext context;
-  // Load built-in dialects in this MLIR context.
-  context.getOrLoadDialect<mlir::func::FuncDialect>();
-  context.getOrLoadDialect<mlir::arith::ArithDialect>();
-  context.getOrLoadDialect<mlir::tensor::TensorDialect>();
-  context.getOrLoadDialect<mlir::bufferization::BufferizationDialect>();
-  // Load MatDialect.
-  context.getOrLoadDialect<mlir::mat::MatDialect>();
-
-  mlir::bufferization::registerOneShotBufferize();
-  mlir::tensor::registerTensorBufferizePass();
-  mlir::arith::registerArithBufferizePass();
-
+int loadMLIR(mlir::MLIRContext &context,
+             mlir::OwningOpRef<mlir::ModuleOp> &module) {
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> fileOrErr =
       llvm::MemoryBuffer::getFileOrSTDIN(inputFilename);
   if (std::error_code ec = fileOrErr.getError()) {
@@ -115,8 +126,7 @@ int loadMLIR() {
   // Parse the input MLIR file.
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(std::move(*fileOrErr), llvm::SMLoc());
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
+  module = mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
   if (!module) {
     llvm::errs() << "Error can't load file: " << inputFilename << "\n";
     return 3;
@@ -124,11 +134,16 @@ int loadMLIR() {
 
   mlir::PassManager pm(module.get()->getName());
   if (mlir::failed(mlir::applyPassManagerCLOptions(pm)))
-    return 4; 
+    return 4;
 
   // Create tiling pass if enabled.
   if (enableTilePass) {
     pm.addNestedPass<mlir::func::FuncOp>(mlir::mat::createTilingPass());
+  }
+
+  // Create affine lowering pass if enabled.
+  if (enableLowerToAffine) {
+    pm.addPass(mlir::mat::createLowerToAffinePass());
   }
 
   /// Create bufferization pass if enabled.
@@ -139,18 +154,15 @@ int loadMLIR() {
         mlir::tensor::createTensorBufferizePass());
   }
 
-  // Create affine lowering pass if enabled.
-  if (enableLowerToAffine) {
-    pm.addPass(mlir::mat::createLowerToAffinePass());
-  }
-
   // Apply optimizations.
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCSEPass());
+  mlir::OpPassManager &optPm = pm.nest<mlir::func::FuncOp>();
+  optPm.addPass(mlir::createCanonicalizerPass());
+  optPm.addPass(mlir::createCSEPass());
 
   // Create LLVM lowering pass if enabled.
   if (enableLowerToLLVM) {
     pm.addPass(mlir::mat::createLowerToLLVMPass());
+    pm.addPass(mlir::LLVM::createDIScopeForLLVMFuncOpPass());
   }
 
   if (mlir::failed(pm.run(*module))) {
