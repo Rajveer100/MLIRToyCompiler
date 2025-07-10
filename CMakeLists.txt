@@ -2,8 +2,11 @@ cmake_minimum_required(VERSION 3.28)
 project(MiniToyCompiler)
 
 # Set C/C++ compiler
-set(CMAKE_C_COMPILER "/opt/homebrew/Cellar/llvm/18.1.8/bin/clang")
-set(CMAKE_CXX_COMPILER "/opt/homebrew/Cellar/llvm/18.1.8/bin/clang++")
+set(CMAKE_C_COMPILER "/Users/rajveersingh/GitHub-OpenSource/llvm-standalone-dev/llvm-project/build/bin/clang")
+set(CMAKE_CXX_COMPILER "/Users/rajveersingh/GitHub-OpenSource/llvm-standalone-dev/llvm-project/build/bin/clang++")
+
+set(CC "/Users/rajveersingh/GitHub-OpenSource/llvm-standalone-dev/llvm-project/build/bin/clang")
+set(CXX "/Users/rajveersingh/GitHub-OpenSource/llvm-standalone-dev/llvm-project/build/bin/clang++")
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 23 CACHE STRING "C++ standard to conform to")
@@ -15,8 +18,8 @@ set(CMAKE_BUILD_TYPE DEBUG)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Set LLVM and MLIR paths
-set(LLVM_DIR /opt/homebrew/Cellar/llvm/18.1.8/lib/cmake/llvm)
-set(MLIR_DIR /opt/homebrew/Cellar/llvm/18.1.8/lib/cmake/mlir)
+set(LLVM_DIR "~/GitHub-OpenSource/llvm-standalone-dev/llvm-project/build/lib/cmake/llvm/")
+set(MLIR_DIR "~/GitHub-OpenSource/llvm-standalone-dev/llvm-project/build/lib/cmake/mlir/")
 
 # Find package LLVM and MLIR
 find_package(LLVM REQUIRED CONFIG)

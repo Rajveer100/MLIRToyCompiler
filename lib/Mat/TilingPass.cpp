@@ -21,6 +21,7 @@
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Support/TypeID.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "Mat/MatDialect.h"
@@ -36,6 +37,8 @@ struct TilingPass
     : public mlir::PassWrapper<TilingPass, OperationPass<func::FuncOp>> {
   inline static constexpr int64_t START_OFFSET = 0;
   inline static constexpr int64_t TILE_SIZE = 8;
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TilingPass)
 
   void runOnOperation() final;
 };

@@ -32,8 +32,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdint>
-#include <sys/_types/_int64_t.h>
-#include <sys/_types/_int8_t.h>
 
 #define GET_OP_CLASSES
 #include "Mat/MatOps.cpp.inc"

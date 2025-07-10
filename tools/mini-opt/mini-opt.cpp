@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Func/Extensions/AllExtensions.h"
+#include "mlir/IR/BuiltinDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
@@ -95,19 +96,17 @@ int main(int argc, char **argv) {
   cl::ParseCommandLineOptions(argc, argv, "Mini Toy Compiler\n");
 
   mlir::DialectRegistry registry;
-  mlir::MLIRContext context(registry);
+  mlir::registerAllDialects(registry);
 
-  context.getOrLoadDialect<mlir::func::FuncDialect>();
-  context.getOrLoadDialect<mlir::arith::ArithDialect>();
-  context.getOrLoadDialect<mlir::tensor::TensorDialect>();
-  context.getOrLoadDialect<mlir::affine::AffineDialect>();
-  context.getOrLoadDialect<mlir::bufferization::BufferizationDialect>();
+  registry.insert<mlir::mat::MatDialect>();
+
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
 
   // Load MatDialect.
   context.getOrLoadDialect<mlir::mat::MatDialect>();
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
-
   if (int error = loadMLIR(context, module))
     return error;
 
@@ -126,7 +125,9 @@ int loadMLIR(mlir::MLIRContext &context,
   // Parse the input MLIR file.
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(std::move(*fileOrErr), llvm::SMLoc());
-  module = mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
+
+  mlir::ParserConfig config(&context);
+  module = mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, config);
   if (!module) {
     llvm::errs() << "Error can't load file: " << inputFilename << "\n";
     return 3;
@@ -149,9 +150,6 @@ int loadMLIR(mlir::MLIRContext &context,
   /// Create bufferization pass if enabled.
   if (enableOneShotBufferize) {
     pm.addPass(mlir::bufferization::createOneShotBufferizePass());
-    pm.addPass(mlir::arith::createArithBufferizePass());
-    pm.addNestedPass<mlir::func::FuncOp>(
-        mlir::tensor::createTensorBufferizePass());
   }
 
   // Apply optimizations.
